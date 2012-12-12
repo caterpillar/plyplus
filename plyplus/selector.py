@@ -13,11 +13,15 @@ def sum_list(l):
 class _Match(object):
     __slots__ = 'match_track'
 
-    def __init__(self, matched, selector_instance):
-        self.match_track = [(matched, selector_instance)]
+    def __init__(self, match_track):
+        self.match_track = match_track
+
+    @classmethod
+    def create(cls, matched, selector_instance):
+        return cls( ((matched, selector_instance),) )
 
     def __hash__(self):
-        return hash(tuple(self.match_track))
+        return hash(self.match_track)
     def __eq__(self, other):
         return self.match_track == other.match_track
 
@@ -25,8 +29,8 @@ class _Match(object):
     def last_elem_matched(self):
         return self.match_track[0][0]
 
-    def extend(self, other):
-        self.match_track += other.match_track
+    def extended(self, other):
+        return type(self)(self.match_track + other.match_track)
 
     def get_result(self):
         yields = [m for m, s in self.match_track
@@ -45,8 +49,9 @@ class _Match(object):
 
 
 class STreeSelector(STree):
-    def _post_init(self):
+    _set_head = None   # Make sure it doesn't change
 
+    def _post_init(self):
         if self.head == 'modifier':
             assert self.tail[0].head == 'modifier_name' and len(self.tail[0].tail) == 1
             modifier_name = self.tail[0].tail[0]
@@ -72,8 +77,8 @@ class STreeSelector(STree):
     def match__elem_head(self, other):
         if not hasattr(other, 'head'):
             return []
-        [expected_head] = self.tail
-        return [other] if other.head == expected_head else []
+        [expected_head] = self._tail
+        return [other] if other._head == expected_head else []
 
     def match__elem_class(self, other):
         raise NotImplementedError('Classes not implemented yet')
@@ -83,28 +88,27 @@ class STreeSelector(STree):
 
     def match__elem_regexp(self, other):
         if is_stree(other):
-            s = other.head
+            s = other._head
         else:
             s = unicode(other)   # hopefully string
-        [regexp] = self.tail
+        [regexp] = self._tail
         assert regexp[0] == regexp[-1] == '/'
         regexp = regexp[1:-1]
         return [other] if re.match(regexp, s) else []
 
     def match__modifier__is_parent(self, other):
-        return [other] if (is_stree(other) and other.tail) else []
+        return [other] if (is_stree(other) and other._tail) else []
     def match__modifier__is_leaf(self, other):
         return [other] if not is_stree(other) else []
 
     def match__elem_with_modifier(self, other):
-        matches = self.tail[-2]._match(other)   # skip possible yield
-        matches = filter(self.tail[-1].match__modifier, matches)
-        return [_Match(m, self) for m in matches]
+        matches = self._tail[-2]._match(other)   # skip possible yield
+        matches = filter(self._tail[-1].match__modifier, matches)
+        return [_Match.create(m, self) for m in matches]
 
     def match__elem_without_modifier(self, other):
-        matches = self.tail[-1]._match(other)   # skip possible yield
-        return [_Match(m, self) for m in matches]
-
+        matches = self._tail[-1]._match(other)   # skip possible yield
+        return [_Match.create(m, self) for m in matches]
 
     def match__selector_list(self, other):
         assert self.head == 'result_list', 'call to _init_selector_list failed!'
@@ -133,9 +137,9 @@ class STreeSelector(STree):
                 new_index = tree.index_in_parent - 1
                 if new_index < 0:
                     raise IndexError('We dont want it to overflow back to the last element')
-                yield tree.parent().tail[new_index]
+                yield tree.parent()._tail[new_index]
             elif op == '~': # travel to all previous siblings
-                for x in tree.parent().tail[ :tree.index_in_parent ]:
+                for x in tree.parent()._tail[ :tree.index_in_parent ]:
                     yield x
             elif op == ' ': # travel back to root
                 parent = tree.parent()  # TODO: what happens if the parent is garbage-collected?
@@ -151,38 +155,38 @@ class STreeSelector(STree):
         _selector = self.tail[0]
         op = self.tail[1].tail[0] if len(self.tail) > 1 else ' '
 
-
         matches_found = []
         for match in matches_so_far:
             to_check = list(self._travel_tree_by_op(match.last_elem_matched, op))
 
             if to_check:
                 for match_found in _selector.match__selector(to_check):
-                    match_found.extend( match )
+                    match_found = match_found.extended( match )
                     matches_found.append( match_found )
 
         return matches_found
 
     def match__selector(self, other):
-        elem = self.tail[-1]
+        elem = self._tail[-1]
         if is_stree(other):
-            res = sum_list(other.map(elem._match))
+            _id = 'match__selector', elem, other
+            _cache = other._cache
+            if _id in _cache:
+                res = _cache[_id]
+            else:
+                res = list(sum_list(other.map(elem._match)))
+                _cache[_id] = res
         else:
             res = sum_list([elem._match(item) for item in other]) # we were called by a selector_op
-        if not res:
-            return []   # shortcut
 
-        if self.tail[0].head == 'selector_op':
-            res = self.tail[0]._match_selector_op(res)
+        if self._tail[0]._head == 'selector_op':
+            res = self._tail[0]._match_selector_op(res)
 
         return res
 
     def match__start(self, other):
-        assert len(self.tail) == 1
-        return self.tail[0]._match(other)
-
-    # def _match(self, other):
-    #     return getattr(self, 'match__' + self.head)(other)
+        assert len(self._tail) == 1
+        return self._tail[0]._match(other)
 
     def match(self, other):
         other.calc_parents()    # TODO add caching?
@@ -219,3 +223,4 @@ def install():
 
     STree.select = select
     STree.select1 = select1
+
